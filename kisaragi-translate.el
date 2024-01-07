@@ -28,7 +28,7 @@
 (defmacro kisaragi-translate--define-view (name arglist docstring &rest body)
   "Define a view called NAME, described by DOCSTRING.
 
-A view consists of a command (defined using NAME (see belo),
+A view consists of a command (defined using NAME (see below),
 ARGLIST, and DOCSTRING, see `defun') and a major mode. The
 command opens a buffer, runs INIT-BODY to fill in the contents,
 then displays it.
@@ -36,31 +36,49 @@ then displays it.
 For convenience, NAME should be a partial name.
 For example, if NAME is \"entry\",
 then the major mode is \"kisaragi-translate--entry-mode\",
-and the command is \"kisaragi-translate-entry-view\"."
+and the command is \"kisaragi-translate-entry-view\".
+
+`interactive' and `declare' should work as usual in BODY, except
+that if no interactive form is provided, the init function is
+still made interactive regardless. If there is more than zero
+required arguments, use the interactive form to declare what they
+should be."
   (declare (doc-string 3) (indent 2))
-  (let ((child (intern (format "kisaragi-translate--%s-mode" name)))
-        (parent 'kisaragi-translate-mode)
-        (mode-name (format "Kisaragi Translate %s" name))
-        (mode-doc (format "Major mode for the Kisaragi Translate %s view."
-                          (capitalize (format "%s" name))))
-        (init-name (intern (format "kisaragi-translate-%s-view" name)))
-        (buffer (format "*Kisaragi Translate %s*" name)))
-    `(progn
-       (define-derived-mode ,child ,parent
-         ,mode-name
-         ,mode-doc
-         :interactive nil)
-       (defun ,init-name ,arglist
-         ,docstring
-         (let ((buf (get-buffer-create ,buffer)))
-           ;; Ensure the buffer is on top
-           (kisaragi-translation--pop-to-buffer ,buffer)
-           (with-current-buffer buf
-             (kisaragi-translation-mode)
-             (prog1 ,@(when body
-                        `((let ((inhibit-read-only t))
-                            ,@body)))
-               (goto-char (point-min)))))))))
+  (let* ((child (intern (format "kisaragi-translate--%s-mode" name)))
+         (parent 'kisaragi-translate-mode)
+         (mode-name (format "Kisaragi Translate %s" name))
+         (mode-doc (format "Major mode for the Kisaragi Translate %s view."
+                           (capitalize (format "%s" name))))
+         (init-name (intern (format "kisaragi-translate-%s-view" name)))
+         (buffer (format "*Kisaragi Translate %s*" name))
+         ;; Grab the declare and interactive forms like `defun' does.
+         (parse (byte-run--parse-body body t))
+         (decl-form (nth 1 parse))
+         (intv-form (nth 2 parse))
+         (body (nth 3 parse)))
+    (cl-with-gensyms (buf)
+      `(progn
+         (define-derived-mode ,child ,parent
+           ,mode-name
+           ,mode-doc
+           :interactive nil)
+         (defun ,init-name ,arglist
+           ,docstring
+           ,@(when decl-form
+               `(,decl-form))
+           ;; The command should always be interactive
+           ,(or intv-form
+                '(interactive))
+           (let ((,buf (get-buffer-create ,buffer)))
+             (if (derived-mode-p 'kisaragi-translation-mode)
+                 (pop-to-buffer-same-window ,buf)
+               (pop-to-buffer ,buf))
+             (with-current-buffer ,buf
+               (,child)
+               (prog1 ,@(when body
+                          `((let ((inhibit-read-only t))
+                              ,@body)))
+                 (goto-char (point-min))))))))))
 
 (kisaragi-translate--define-view entry ()
   "View for editing an entry.
