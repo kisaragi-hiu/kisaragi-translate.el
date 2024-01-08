@@ -22,8 +22,37 @@
 ;;
 ;;; Code:
 
+(require 'cl-lib)
+
+;;;; Data
+
+(cl-defstruct (kisaragi-translate--project
+               (:copier nil)
+               (:constructor kisaragi-translate--project))
+  "Represent a project.
+NAME: the name of the project.
+PATH: the project contains translation files within PATH."
+  name path)
+(cl-defstruct (kisaragi-translate--entry
+               (:copier nil)
+               (:constructor kisaragi-translate--entry))
+  source target)
+
+;;;; UI
+
 (require 'bufview)
 
+;;;;; The editable region workaround.
+;; Given a UI like this, in a non-read-only buffer:
+;;
+;;   Some read only UI heading text:
+;;   User editing area
+;;
+;;   Another read only UI heading text
+;;
+;; We want "User editing area" to always be editable, even if the whole string
+;; has been deleted. But we also don't want its preceding newline character to
+;; be able to be deleted. This achieves that.
 (defun kisaragi-translate--make-region-editable (start end)
   "Ensure that the region between START and END is editable."
   (put-text-property start end 'read-only nil)
@@ -31,24 +60,8 @@
   (put-text-property start end 'front-sticky nil))
 (defvar-local kisaragi-translate--editable-positions nil
   "Buffer position markers that must remain editable.
-
-When we use the read-only text property and the sticky properties
-to set up UI like this properly:
-
-  Some heading:
-  A user editable field
-
-  Some other heading:
-  user editable text
-
-If the user removes all editable text, there will be no region
-left that remains editable.
-
-`kisaragi-translate--base-mode' solves this by remembering where
-each editable region starts in this list. When point is on a
-place that should continue to remain editable,
-`kisaragi-translate--base-mode' sets up hooks such that
-`self-insert-command' will insert a non-read-only character.")
+Instead of modifying this directly, try using
+`kisaragi-translate--insert-edit-area'.")
 (defvar-local kisaragi-translate--should-reset-read-only nil
   "Used for the editable workaround.
 When resetting `inhibit-read-only' to the default value,
@@ -56,45 +69,50 @@ When resetting `inhibit-read-only' to the default value,
 by us. This allows marking that it *is* set by us and is safe to
 reset.")
 (defvar-local kisaragi-translate--pre-self-insert-point nil
-  "Used for the editable workaround.")
+  "Used for the editable workaround.
+The post-command hook sets the inserted text to be editable. That
+region may not be just one character in size, because
+`self-insert-command' can insert multiple characters at once.
+This variable is used to remember where the region starts.")
+(defun kisaragi-translate--editable-workaround--precmdh ()
+  "The `pre-command-hook' for the editable workaround."
+  (when (and (get-text-property (point) 'read-only)
+             (eq this-command #'self-insert-command)
+             (cl-some (lambda (mk)
+                        (= mk (point)))
+                      kisaragi-translate--editable-positions))
+    ;; Store the point before insertion. The inserted text is not
+    ;; necessary just one character as `self-insert-command' has a
+    ;; prefix argument to insert multiple characters at once.
+    (setq kisaragi-translate--pre-self-insert-point (point)
+          kisaragi-translate--should-reset-read-only t
+          inhibit-read-only t)))
+(defun kisaragi-translate--editable-workaround--postcmdh ()
+  "The `post-command-hook' for the editable workaround."
+  ;; We've just inserted read-only text. Reset its read-only
+  ;; status.
+  (when (and (get-text-property (point) 'read-only)
+             (eq this-command #'self-insert-command))
+    (let ((inhibit-read-only t)
+          (start kisaragi-translate--pre-self-insert-point)
+          (end (point)))
+      (when (and start
+                 end
+                 (< start end))
+        (kisaragi-translate--make-region-editable start end))))
+  (when kisaragi-translate--should-reset-read-only
+    (setq inhibit-read-only nil
+          kisaragi-translate--should-reset-read-only nil
+          kisaragi-translate--pre-self-insert-point nil)))
 (define-derived-mode kisaragi-translate--base-mode text-mode
   "Kisaragi Translate"
   "The basis major mode for all Kisaragi Translate major modes."
-  (add-hook 'pre-command-hook
-            (lambda ()
-              (when (and (get-text-property (point) 'read-only)
-                         (eq this-command #'self-insert-command)
-                         (cl-some (lambda (mk)
-                                    (= mk (point)))
-                                  kisaragi-translate--editable-positions))
-                ;; Store the point before insertion. The inserted text is not
-                ;; necessary just one character as `self-insert-command' has a
-                ;; prefix argument to insert multiple characters at once.
-                (setq kisaragi-translate--pre-self-insert-point (point)
-                      kisaragi-translate--should-reset-read-only t
-                      inhibit-read-only t)))
-            nil t)
+  (add-hook 'pre-command-hook #'kisaragi-translate--editable-workaround--precmdh nil t)
   ;; We use `post-command-hook', not `post-self-insert-hook', to be extra sure
   ;; we always reset `inhibit-read-only'.
-  (add-hook 'post-command-hook
-            (lambda ()
-              ;; We've just inserted read-only text. Reset its read-only
-              ;; status.
-              (when (and (get-text-property (point) 'read-only)
-                         (eq this-command #'self-insert-command))
-                (let ((inhibit-read-only t)
-                      (start kisaragi-translate--pre-self-insert-point)
-                      (end (point)))
-                  (when (and start
-                             end
-                             (< start end))
-                    (kisaragi-translate--make-region-editable start end))))
-              (when kisaragi-translate--should-reset-read-only
-                (setq inhibit-read-only nil
-                      kisaragi-translate--should-reset-read-only nil
-                      kisaragi-translate--pre-self-insert-point nil)))
-            nil t))
+  (add-hook 'post-command-hook #'kisaragi-translate--editable-workaround--precmdh nil t))
 
+;;;;; Wrapper
 (defmacro kisaragi-translate--define-view (name arglist docstring &rest body)
   "Wrapper around `bufview-define'."
   (declare (doc-string 3) (indent 2))
@@ -103,6 +121,8 @@ reset.")
     `(bufview-define ,view ,parent-mode ,arglist
        ,docstring
        ,@body)))
+
+;;;;; Widgets
 (defun kisaragi-translate--insert-edit-area (initial-input)
   "Insert an edit area, with INITIAL-INPUT as the content.
 The area is made sure to be editable."
@@ -133,6 +153,7 @@ immediately before or immediately after the inserted string."
     (let ((ov (make-overlay start end)))
       (overlay-put ov 'face face))))
 
+;;;;; Views
 (kisaragi-translate--define-view entry ()
   "View for editing an entry.
 Shows the source text, a place for editing the target text, as
@@ -170,7 +191,10 @@ Commands:
 (kisaragi-translate--define-view entry-list ()
   "View for listing entries in a file.
 Alternatively, a `completing-read'-based command is also provided
-for selecting entries of a file.")
+for selecting entries of a file."
+  :init (read-only-mode)
+  :revert
+  (insert))
 (kisaragi-translate--define-view file-list ()
   "View for listing files in a project.
 Alternatively, a `completing-read'-based command is also provided
