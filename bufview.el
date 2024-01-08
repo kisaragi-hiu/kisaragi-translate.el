@@ -8,6 +8,19 @@
 
 (require 'cl-lib)
 
+(defvar-local bufview--state nil
+  "Buffer-local state for a view.")
+(defun bufview-local-get (key)
+  "Lookup the value in the buffer-local bufview state for KEY."
+  (unless bufview--state
+    (setq-local bufview--state (make-hash-table :test #'equal)))
+  (gethash key bufview--state))
+(defun bufview-local-set (key value)
+  "Set KEY to VALUE in the buffer-local bufview state."
+  (unless bufview--state
+    (setq-local bufview--state (make-hash-table :test #'equal)))
+  (puthash key value bufview--state))
+
 (defun bufview--split-body-keywords (body)
   "Split BODY into parts determined by keywords.
 Implements similar logic to `use-package'\\='s body.
@@ -30,7 +43,6 @@ Implements similar logic to `use-package'\\='s body.
      collect (cons keyword
                    (nreverse (gethash keyword body-table))))))
 
-;; TODO: buffer local state system
 (defmacro bufview-define (name parent-mode arglist docstring &rest body)
   "Define a view called NAME, described by DOCSTRING.
 
@@ -58,7 +70,10 @@ The revert command clears the buffer content, then runs REVERT-BODY.
 apply to the init command. If no interactive form is provided,
 the init function is still made interactive regardless. If there
 is more than zero required arguments, use the interactive form to
-declare what they should be."
+declare what they should be.
+
+A convenience storage for buffer-local state is provided through
+`bufview-local-get' and `bufview-local-set'."
   (declare (doc-string 4) (indent 3))
   (let* ((child (intern (format "%s--major-mode" name)))
          (human-name (capitalize
