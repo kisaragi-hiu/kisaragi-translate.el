@@ -6,6 +6,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 (defun bufview--split-body-keywords (body)
   "Split BODY into parts determined by keywords.
 Implements similar logic to `use-package'\\='s body.
