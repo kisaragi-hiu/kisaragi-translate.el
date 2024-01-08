@@ -154,7 +154,7 @@ immediately before or immediately after the inserted string."
       (overlay-put ov 'face face))))
 
 ;;;;; Views
-(kisaragi-translate--define-view entry ()
+(kisaragi-translate--define-view entry (entry)
   "View for editing an entry.
 Shows the source text, a place for editing the target text, as
 well as references such as Translation Memory and Glossary.
@@ -168,24 +168,19 @@ Commands:
 - copy source to target
 - toggle fuzzy (marked with italic target text)"
   :init
-  ;; init-body
+  (bufview-local-set :entry entry)
   :revert
   (kisaragi-translate--insert-ui-text "Source\n" 'bold)
   (kisaragi-translate--insert-ui-text
       ;; Test string
-      (concat
-       "Use KDE software to surf the web, keep in touch with colleagues, friends and "
-       "family, manage your files, enjoy music and videos; and get creative and "
-       "productive at work. The KDE community develops and maintains more than "
-       "<strong>200</strong> applications which run on any Linux desktop, and often "
-       "other platforms too."
-       "\n")
+      (concat (oref (bufview-local-get :entry) source)
+              "\n")
       'font-lock-constant-face)
   (kisaragi-translate--insert-ui-text "\n" 'default)
   (kisaragi-translate--insert-ui-text "Target\n" 'bold
     :edit-after t)
   (kisaragi-translate--insert-edit-area
-   "KDEのソフトウェアでウェブに")
+   (oref (bufview-local-get :entry) target))
   (kisaragi-translate--insert-ui-text "\n" 'default)
   (kisaragi-translate--insert-ui-text "Glossary" 'bold))
 (kisaragi-translate--define-view entry-list ()
@@ -193,12 +188,21 @@ Commands:
 Alternatively, a `completing-read'-based command is also provided
 for selecting entries of a file."
   :init (read-only-mode)
-  :revert
-  (insert))
+  :revert)
 (kisaragi-translate--define-view file-list ()
   "View for listing files in a project.
 Alternatively, a `completing-read'-based command is also provided
 for selecting files of a project.")
+
+(kisaragi-translate--entry-view
+ (kisaragi-translate--entry
+  :source
+  (concat "Use KDE software to surf the web, keep in touch with colleagues, friends and "
+          "family, manage your files, enjoy music and videos; and get creative and "
+          "productive at work. The KDE community develops and maintains more than "
+          "<strong>200</strong> applications which run on any Linux desktop, and often "
+          "other platforms too.")
+  :target "KDEのソフトウェアでウェブに"))
 
 (provide 'kisaragi-translate)
 ;;; kisaragi-translate.el ends here

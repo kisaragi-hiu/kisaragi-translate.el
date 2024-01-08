@@ -66,11 +66,8 @@ specified in BODY, with keywords, similar to `use-package'. For instance:
 The init command opens a buffer, runs INIT-BODY in it, then displays it.
 The revert command clears the buffer content, then runs REVERT-BODY.
 
-`interactive' and `declare' should work as usual in BODY, and
-apply to the init command. If no interactive form is provided,
-the init function is still made interactive regardless. If there
-is more than zero required arguments, use the interactive form to
-declare what they should be.
+`interactive' and `declare' should work as usual in INIT-BODY,
+and apply to the init command.
 
 A convenience storage for buffer-local state is provided through
 `bufview-local-get' and `bufview-local-set'."
@@ -110,9 +107,8 @@ A convenience storage for buffer-local state is provided through
            ,docstring
            ,@(when init-decl-form
                `(,init-decl-form))
-           ;; The init command should always be interactive
-           ,(or init-intv-form
-                '(interactive))
+           ,@(when init-intv-form
+               `(,init-intv-form))
            (let ((,buf (get-buffer-create ,buffer)))
              (if (derived-mode-p 'kisaragi-translation-mode)
                  (pop-to-buffer-same-window ,buf)
