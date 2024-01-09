@@ -198,6 +198,7 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
 (cl-defstruct (gettext-parser--node
                (:copier nil)
                (:constructor gettext-parser--node))
+  type
   comments key
   msgctxt msgid msgid_plural msgstr
   obsolete value)
@@ -219,7 +220,36 @@ If VALIDATION is non-nil, throw errors when there are issues."
     (gettext-parser--po-lexer
      (oref parser file-contents))
     (gettext-parser--po-finalize
+     parser
      (oref parser lex))))
+
+(defun gettext-parser--po-handle-keys (tokens)
+  "Join gettext keys with values in TOKENS."
+  (let ((i 0)
+        (len (length tokens))
+        node
+        response
+        last-node)
+    (while (< i len)
+      (setq node (elt tokens i))
+      (cond ((eq 'key (oref node type))
+             (setq last-node
+                   (gettext-parser--node
+                    :key (oref node value)
+                    :obsolete (oref node obsolete)
+                    :comments (let ((prev (elt tokens (1- i))))
+                                (and (/= i 0)
+                                     (eq (oref prev type) 'comments)
+                                     (oref prev value)))
+                    :value ""))
+             (push last-node response))
+            ((and (eq 'string (oref node type))
+                  last-node)
+             (gettext-parser--concat!
+              (oref last-node value)
+              (oref node value))))
+      (cl-incf i))
+    (nreverse response)))
 
 (defun gettext-parser--po-handle-values (parser tokens)
   "Separate different values into individual translation objects in TOKENS.
@@ -347,12 +377,13 @@ Will throw an error if token validation fails."
          node (map-elt table 'translations) msgctxt nplurals)))
     table))
 
-(defun gettext-parser--po-finalize (tokens)
-  "Convert parsed TOKENS to a translation table."
+(defun gettext-parser--po-finalize (parser tokens)
+  "Convert parsed TOKENS to a translation table.
+PARSER is the parser object."
   (let ((data (gettext-parser--po-join-string-values tokens)))
     (gettext-parser--po-parse-comments data)
     (setq data (gettext-parser--po-handle-keys data))
-    (setq data (gettext-parser--po-handle-values data))
+    (setq data (gettext-parser--po-handle-values parser data))
     (gettext-parser--po-normalize data)))
 
 (defvar-local gettext-parser--po--validation nil)
@@ -532,35 +563,6 @@ CHUNK is a string for the chunk to process."
             (setf (map-elt (map-elt node 'value) key)
                   (string-join (map-elt comment key)
                                "\n"))))))))
-
-;; Parser.prototype._handleKeys
-(defun gettext-parser--po-handle-keys (tokens)
-  "Join gettext keys with values in TOKENS."
-  (let ((i 0)
-        (len (length tokens))
-        node
-        response
-        last-node)
-    (while (< i len)
-      (setq node (elt tokens i))
-      (cond ((eq (map-elt node 'type) 'key)
-             (setq last-node
-                   `((key . ,(map-elt node 'value))
-                     ,@(when (map-elt node 'obsolete)
-                         '((obsolete . t)))
-                     ,@(let ((prev (elt tokens (1- i))))
-                         (when (and (/= i 0)
-                                    (eq (map-elt prev 'type) 'comments))
-                           `((comments . ,(map-elt prev 'value)))))
-                     (value . "")))
-             (push last-node response))
-            ((and (eq (map-elt node 'type) 'string)
-                  last-node)
-             (gettext-parser--concat!
-              (map-elt last-node 'value)
-              (map-elt node 'value))))
-      (cl-incf i))
-    (nreverse response)))
 
 ;; TODO Parser.prototype._validateToken
 ;; TODO Parser.prototype._normalize
