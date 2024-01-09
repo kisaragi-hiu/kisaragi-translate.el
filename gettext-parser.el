@@ -251,7 +251,6 @@ If VALIDATION is non-nil, throw errors when there are issues."
      parser
      (oref parser lex))))
 
-;; Parser.prototype._lexer
 (defun gettext-parser--po-lexer (parser chunk)
   "Token parser.
 PARSER is the parser object for storing and passing around state.
@@ -513,9 +512,9 @@ TRANSLATIONS is the translation table.
 MSGCTXT is the message entry context.
 NPLURALS is the number of expected plural forms.
 Will throw an error if token validation fails."
-  (let ((msgid (map-elt node 'msgid ""))
-        (msgid_plural (map-elt node 'msgid_plural ""))
-        (msgstr (map-elt node 'msgstr)))
+  (let ((msgid (or (oref node msgid) ""))
+        (msgid_plural (or (oref node msgid_plural) ""))
+        (msgstr (oref node msgstr)))
     (when (oref parser validation)
       (cond
        ((gettext-parser--translation-table--elt translations msgctxt msgid)
@@ -537,8 +536,9 @@ Will throw an error if token validation fails."
 
 ;; The translation table is
 ;; {"msgctxt1": {"msgid": (entry), "msgid2": (entry2)}}
-(defun gettext-parser--po-normalize (tokens)
-  "Compose the result table from TOKENS."
+(defun gettext-parser--po-normalize (parser tokens)
+  "Compose the result table from TOKENS.
+PARSER is the parser object."
   (let ((table (make-hash-table))
         (nplurals 1)
         (msgctxt nil))
@@ -546,16 +546,16 @@ Will throw an error if token validation fails."
     (puthash 'translations (gettext-parser--translation-table) table)
     (dolist (node tokens)
       (catch 'continue
-        (when (map-elt node 'obsolete)
+        (when (oref node obsolete)
           (unless (-> (map-elt table 'obsolete)
                       (map-elt msgctxt))
             (setf (-> (map-elt table 'obsolete)
                       (map-elt msgctxt))
                   (make-hash-table)))
-          (map-delete node 'obsolete)
+          (oset node obsolete nil)
           (setf (-> (map-elt table 'obsolete)
                     (map-elt msgctxt)
-                    (map-elt (map-elt node 'msgid)))
+                    (map-elt (oref node msgid)))
                 node)
           (throw 'continue nil))
         (unless (gettext-parser--translation-table--elt
@@ -566,17 +566,21 @@ Will throw an error if token validation fails."
            msgctxt (make-hash-table)))
         (when (and (not (map-elt table 'headers))
                    (not msgctxt)
-                   (not (map-elt node 'msgid)))
+                   (not (oref node msgid)))
           (setf (map-elt table 'headers)
                 (gettext-parser--parse-header
-                 (-> (map-elt node 'msgstr)
+                 (-> (oref node msgstr)
                      (elt 0))))
           (setq nplurals
                 (gettext-parser--parse-nplural-from-header-safely
                  (map-elt table 'headers)
                  nplurals)))
         (gettext-parser--po-validate-token
-         node (map-elt table 'translations) msgctxt nplurals)))
+         parser
+         node
+         (map-elt table 'translations)
+         msgctxt
+         nplurals)))
     table))
 
 (defun gettext-parser--po-finalize (parser tokens)
@@ -586,13 +590,7 @@ PARSER is the parser object."
     (setq data (gettext-parser--po-parse-comments data))
     (setq data (gettext-parser--po-handle-keys data))
     (setq data (gettext-parser--po-handle-values parser data))
-    (gettext-parser--po-normalize data)))
-
-;; TODO Parser.prototype._validateToken
-;; TODO Parser.prototype._normalize
-;; TODO Parser.prototype._finalize
-;; TODO Parser constructor
-;; TODO Parser.prototype._parse
+    (gettext-parser--po-normalize parser data)))
 
 (defun gettext-parser-po-compile ())
 (defun gettext-parser-mo-parse ())
