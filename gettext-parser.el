@@ -38,14 +38,6 @@
 ;;   INPUT: a MO file as a buffer or string
 ;; - (gettext-parser-mo-compile input)
 ;;   Turn DATA, a translation object, into valid MO.
-;;
-;; Data types:
-;;
-;; - Header: hash table representing the header
-;; - Translations: hash table containing contexts.
-;; - Contexts: hash table mapping entry msgids to entry values.
-;;
-;; The header also shows up in translations, but is just for reference.
 
 ;;; Code:
 
@@ -592,9 +584,9 @@ PARSER is the parser object."
     (setq data (gettext-parser--po-handle-values parser data))
     (gettext-parser--po-normalize parser data)))
 
-(defun gettext-parser-po-compile ())
-(defun gettext-parser-mo-parse ())
-(defun gettext-parser-mo-compile ())
+;; (defun gettext-parser-po-compile ())
+;; (defun gettext-parser-mo-parse ())
+;; (defun gettext-parser-mo-compile ())
 
 (provide 'gettext-parser)
 
