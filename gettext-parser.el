@@ -49,6 +49,8 @@
 
 ;;; Code:
 
+(require 'dash)
+
 (defmacro gettext-parser--concat! (place str)
   "Concat STR to PLACE in-place."
   (macroexp-let2 macroexp-copyable-p x str
@@ -104,21 +106,23 @@ The first matching group is the digits for the nplurals value.")
   "Attempt to safely parse nplurals value from the Plural-Forms header.
 HEADER: the header hash table.
 Return FALLBACK or the parsed result."
-  (if-let ((plural-forms (gethash "Plural-Forms" header))
+  (if-let ((plural-forms (map-elt header "Plural-Forms"))
            ((string-match gettext-parser--plural-from-header-nplurals-regexp
-                         plural-forms))
+                          plural-forms))
            (match (match-string 1)))
       (string-to-number match)
     fallback))
 (cl-defun gettext-parser--generate-header
     (&optional (header (make-hash-table :test #'equal)))
   "Join the HEADER table into a header string."
-  (if-let (keys (cl-remove-if #'string-empty-p (hash-table-keys header)))
+  (if-let (keys (->> (hash-table-keys header)
+                     (--map (format "%s" it))
+                     (-remove #'string-empty-p)))
       (cl-loop
        for key in keys
        concat (format "%s: %s\n"
                       key
-                      (string-trim (gethash key header ""))))
+                      (string-trim (map-elt header key ""))))
     ""))
 (cl-defun gettext-parser--fold-line (str &optional (max-length 76))
   "Fold long lines in STR to be at most MAX-LENGTH characters long.
@@ -171,11 +175,185 @@ Return a list of folded lines."
     (nreverse lines)))
 (defun gettext-parser--compare-msgid (a b)
   "Compare entries A and B by their msgid."
-  ;; TODO: how are entries represented?
-  (string< (gethash a :msgid)
-           (gethash b :msgid)))
+  (string< (map-elt a 'msgid)
+           (map-elt b 'msgid)))
 
 ;;;; PO parser
+
+(defun gettext-parser--translation-table ()
+  "Create an empty translation table."
+  (make-hash-table))
+(defun gettext-parser--translation-table--elt (ttable msgctxt &optional msgid)
+  "Return entries for MSGCTXT in TTABLE.
+If MSGID is non-nil, lookup MSGID from the entries instead."
+  (let ((entries (gethash msgctxt ttable)))
+    (if (and entries msgid)
+        (gethash msgid entries)
+      entries)))
+(defun gettext-parser--translation-table--put (ttable msgctxt entries)
+  "Set MSGCTXT to ENTRIES in TTABLE."
+  (cl-assert (hash-table-p entries))
+  (puthash msgctxt entries ttable))
+
+(cl-defstruct (gettext-parser--node
+               (:copier nil)
+               (:constructor gettext-parser--node))
+  comments key
+  msgctxt msgid msgid_plural msgstr
+  obsolete value)
+
+(cl-defstruct (gettext-parser--po-parser
+               (:copier nil)
+               (:constructor gettext-parser--po-parser))
+  validation lex escaped node state line-number file-contents)
+
+(cl-defun gettext-parser-po-parse (input &key validation)
+  "Parse PO INPUT.
+INPUT is either a string or (TODO) a buffer.
+If VALIDATION is non-nil, throw errors when there are issues."
+  (let ((parser (gettext-parser--po-parser
+                 :validation validation
+                 :state 'none
+                 :line-number 1
+                 :file-contents input)))
+    (gettext-parser--po-lexer
+     (oref parser file-contents))
+    (gettext-parser--po-finalize
+     (oref parser lex))))
+
+(defun gettext-parser--po-handle-values (parser tokens)
+  "Separate different values into individual translation objects in TOKENS.
+PARSER is the current parser object."
+  (let (response last-node cur-context cur-comments)
+    (dolist (node tokens)
+      (let ((key (downcase (oref node key))))
+        (cond ((equal key 'msgctxt)
+               (setq cur-context (oref node value))
+               (setq cur-comments (oref node comments)))
+              ((equal key 'msgid)
+               (setq last-node
+                     (gettext-parser--node
+                      :msgid (oref node value)
+                      :obsolete (oref node obsolete)
+                      :msgctxt cur-context
+                      :comments (if (and (oref node comments)
+                                         (not (oref last-node comments)))
+                                    (oref node comments)
+                                  cur-comments)))
+               (setq cur-context nil
+                     cur-comments nil)
+               (push last-node response))
+              ((equal key 'msgid_plural)
+               (when last-node
+                 (when (and (oref parser validation)
+                            (oref last-node msgid_plural))
+                   (error
+                    "Multiple msgid_plural error: entry \"%s\" in \"%s\" context has multiple msgid_plural declarations"
+                    (oref last-node msgid)
+                    (or (oref last-node msgctxt) "")))
+                 (setf (map-elt last-node 'msgid_plural)
+                       (map-elt node 'value)))
+               (when (and (oref node comments)
+                          (not (oref last-node comments)))
+                 (setf (oref last-node 'comments)
+                       (oref node 'comments)))
+               (setq cur-context nil
+                     cur-comments nil))
+              ((equal "msgstr" (substring (symbol-name key) 0 6))
+               (when last-node
+                 (setf (oref last-node msgstr)
+                       (append
+                        (oref last-node msgstr)
+                        (list (oref node value)))))
+               (when (and (oref node comments)
+                          (not (oref last-node comments)))
+                 (setf (oref last-node comments)
+                       (oref node comments)))
+               (setq cur-context nil
+                     cur-comments nil)))))
+    (nreverse response)))
+
+(defun gettext-parser--po-validate-token (parser node translations msgctxt nplurals)
+  "Validate a token, NODE.
+PARSER is the parser object.
+
+TRANSLATIONS is the translation table.
+MSGCTXT is the message entry context.
+NPLURALS is the number of expected plural forms.
+Will throw an error if token validation fails."
+  (let ((msgid (map-elt node 'msgid ""))
+        (msgid_plural (map-elt node 'msgid_plural ""))
+        (msgstr (map-elt node 'msgstr)))
+    (when (oref parser validation)
+      (cond
+       ((gettext-parser--translation-table--elt translations msgctxt msgid)
+        (error "Duplicate msgid error: entry \"%s\" in \"%s\" context has already been declared"
+               msgid msgctxt))
+       ((and msgid_plural
+             (/= nplurals (length msgstr)))
+        (error "Plural forms range error: Expected to find %s forms but got %s for entry \"%s\" in \"%s\" context"
+               nplurals
+               (length msgstr)
+               msgid_plural
+               msgctxt))
+       ((and (not msgid_plural)
+             (/= 1 (length msgstr)))
+        (error "Translation string range error: Extected 1 msgstr definitions associated with \"%s\" in \"%s\" context, found %s"
+               msgid
+               msgctxt
+               (length msgstr)))))))
+
+;; The translation table is
+;; {"msgctxt1": {"msgid": (entry), "msgid2": (entry2)}}
+(defun gettext-parser--po-normalize (tokens)
+  "Compose the result table from TOKENS."
+  (let ((table (make-hash-table))
+        (nplurals 1)
+        (msgctxt nil))
+    (puthash 'headers nil table)
+    (puthash 'translations (gettext-parser--translation-table) table)
+    (dolist (node tokens)
+      (catch 'continue
+        (when (map-elt node 'obsolete)
+          (unless (-> (map-elt table 'obsolete)
+                      (map-elt msgctxt))
+            (setf (-> (map-elt table 'obsolete)
+                      (map-elt msgctxt))
+                  (make-hash-table)))
+          (map-delete node 'obsolete)
+          (setf (-> (map-elt table 'obsolete)
+                    (map-elt msgctxt)
+                    (map-elt (map-elt node 'msgid)))
+                node)
+          (throw 'continue nil))
+        (unless (gettext-parser--translation-table--elt
+                 (map-elt table 'translations)
+                 msgctxt)
+          (gettext-parser--translation-table--put
+           (map-elt table 'translations)
+           msgctxt (make-hash-table)))
+        (when (and (not (map-elt table 'headers))
+                   (not msgctxt)
+                   (not (map-elt node 'msgid)))
+          (setf (map-elt table 'headers)
+                (gettext-parser--parse-header
+                 (-> (map-elt node 'msgstr)
+                     (elt 0))))
+          (setq nplurals
+                (gettext-parser--parse-nplural-from-header-safely
+                 (map-elt table 'headers)
+                 nplurals)))
+        (gettext-parser--po-validate-token
+         node (map-elt table 'translations) msgctxt nplurals)))
+    table))
+
+(defun gettext-parser--po-finalize (tokens)
+  "Convert parsed TOKENS to a translation table."
+  (let ((data (gettext-parser--po-join-string-values tokens)))
+    (gettext-parser--po-parse-comments data)
+    (setq data (gettext-parser--po-handle-keys data))
+    (setq data (gettext-parser--po-handle-values data))
+    (gettext-parser--po-normalize data)))
 
 (defvar-local gettext-parser--po--validation nil)
 (defvar-local gettext-parser--po--line-number nil)
@@ -384,70 +562,12 @@ CHUNK is a string for the chunk to process."
       (cl-incf i))
     (nreverse response)))
 
-;; Parser.prototype._handleValues
-(defun gettext-parser--po-handle-values (tokens)
-  "Separate different values into individual translation objects in TOKENS."
-  (let (response last-node cur-context cur-comments)
-    (dolist (node tokens)
-      (let ((key (downcase (map-elt node 'key))))
-        (cond ((equal key "msgctxt")
-               (setq cur-context (map-elt node 'value))
-               (setq cur-comments (map-elt node 'comments)))
-              ((equal key "msgid")
-               (setq last-node
-                     `((msgid . ,(map-elt node 'value))
-                       ,@(when (map-elt node 'obsolete)
-                           '((obsolete . t)))
-                       ,@(when cur-context
-                           `((msgctxt . ,cur-context)))
-                       ,@(cond
-                          ((and (map-elt node 'comments)
-                                (not (map-elt last-node 'comments)))
-                           `((comments . ,(map-elt node 'comments))))
-                          (cur-comments
-                           `((comments . ,cur-comments))))))
-               (setq cur-context nil
-                     cur-comments nil)
-               (push last-node response))
-              ((equal key "msgid_plural")
-               (when last-node
-                 (when (and gettext-parser--po--validation
-                            (map-elt last-node 'msgid_plural))
-                   (error
-                    "Multiple msgid_plural error: entry \"%s\" in \"%s\" context has multiple msgid_plural declarations"
-                    (map-elt last-node 'msgid)
-                    (map-elt last-node 'msgctxt "")))
-                 (setf (map-elt last-node 'msgid_plural)
-                       (map-elt node 'value)))
-               (when (and (map-elt node 'comments)
-                          (not (map-elt last-node 'comments)))
-                 (setf (map-elt last-node 'comments)
-                       (map-elt node 'comments)))
-               (setq cur-context nil
-                     cur-comments nil))
-              ((equal (substring key 0 6) "msgstr")
-               (when last-node
-                 (setf (map-elt last-node 'msgstr)
-                       (append
-                        (map-elt last-node 'msgstr)
-                        (list (map-elt node 'value)))))
-               (when (and (map-elt node 'comments)
-                          (not (map-elt last-node 'comments)))
-                 (setf (map-elt last-node 'comments)
-                       (map-elt node 'comments)))
-               (setq cur-context nil
-                     cur-comments nil)))))
-    (nreverse response)))
-
 ;; TODO Parser.prototype._validateToken
 ;; TODO Parser.prototype._normalize
 ;; TODO Parser.prototype._finalize
 ;; TODO Parser constructor
 ;; TODO Parser.prototype._parse
 
-(defun gettext-parser-po-parse ()
-  (gettext-parser--po-finalize
-   (gettext-parser--po-lexer)))
 (defun gettext-parser-po-compile ())
 (defun gettext-parser-mo-parse ())
 (defun gettext-parser-mo-compile ())
