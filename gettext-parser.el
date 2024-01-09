@@ -195,6 +195,10 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
   (cl-assert (hash-table-p entries))
   (puthash msgctxt entries ttable))
 
+(cl-defstruct (gettext-parser--comment
+               (:copier nil)
+               (:constructor gettext-parser--comment))
+  translator extracted reference flag previous)
 (cl-defstruct (gettext-parser--node
                (:copier nil)
                (:constructor gettext-parser--node))
@@ -202,11 +206,32 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
   comments key
   msgctxt msgid msgid_plural msgstr
   obsolete value)
-
 (cl-defstruct (gettext-parser--po-parser
                (:copier nil)
                (:constructor gettext-parser--po-parser))
-  validation lex escaped node state line-number file-contents)
+  escaped file-contents lex line-number
+  node
+  (state
+   nil
+   :documentation "The current parsing state.
+Possible values: `none', `comments', `key', `string', `obsolete'.")
+  validation)
+
+(defconst gettext-parser--po-types '(comments key string obsolete)
+  "Possible values: `comments', `key', `string', `obsolete'.")
+(defconst gettext-parser--po-symbols
+  `((quotes . "[\"']")
+    (comments . "#")
+    (whitespace . "[[:space:]]")
+    (key . ,(rx (any "-" word "\\]")))
+    (key-names . ,(rx bol
+                      (or "msgctxt"
+                          "msgid"
+                          "msgid_plural"
+                          (seq "msgstr"
+                               (opt "[" (+ digit) "]")))
+                      eol)))
+  "String matches for lexer.")
 
 (cl-defun gettext-parser-po-parse (input &key validation)
   "Parse PO INPUT.
@@ -222,6 +247,149 @@ If VALIDATION is non-nil, throw errors when there are issues."
     (gettext-parser--po-finalize
      parser
      (oref parser lex))))
+
+;; Parser.prototype._lexer
+;; TODO: push order
+(defun gettext-parser--po-lexer (chunk)
+  "Token parser.
+Parsed state is stored into `gettext-parser--po-lex'.
+CHUNK is a string for the chunk to process."
+  (let ((len (length chunk))
+        (i 0)
+        chr)
+    ;; Use an index like this to allow backtracking
+    (while (< i len)
+      (setq chr (string (aref chunk i)))
+      (when (equal chr "\n")
+        (cl-incf gettext-parser--po--line-number))
+      (pcase gettext-parser--po--state
+        ((or 'none 'obsolete)
+         (cond ((string-match-p
+                 (map-elt gettext-parser--po-symbols 'quotes)
+                 chr)
+                (setq gettext-parser--po--node
+                      `((type . string)
+                        (value . "")
+                        (quote . ,chr)))
+                (push gettext-parser--po--node
+                      gettext-parser--po--lex)
+                (setq gettext-parser--po--state 'string))
+               ((string-match-p
+                 (map-elt gettext-parser--po-symbols 'comments)
+                 chr)
+                (setq gettext-parser--po--node
+                      `((type . comments)
+                        (value . "")))
+                (push gettext-parser--po--node
+                      gettext-parser--po--lex)
+                (setq gettext-parser--po--state 'comments))
+               ((string-match-p
+                 (map-elt gettext-parser--po-symbols 'whitespace)
+                 chr)
+                (setq gettext-parser--po--node
+                      `((type . key)
+                        (value . ,chr)
+                        ,@(when (eq gettext-parser--po--state 'obsolete)
+                            '((obsolete . t)))))
+                (push gettext-parser--po--node
+                      gettext-parser--po--lex)
+                (setq gettext-parser--po--state 'key))))
+        ('comments
+         (cond ((equal chr "\n")
+                (setq gettext-parser--po--state 'none))
+               ((and (equal chr "~")
+                     (equal (map-elt gettext-parser--po--node 'value)
+                            ""))
+                (gettext-parser--po--concat-node-value! chr)
+                (setq gettext-parser--po--state 'obsolete))
+               ((not (equal chr "\r"))
+                (gettext-parser--po--concat-node-value! chr))))
+        ('string
+         (cond
+          (gettext-parser--po--escaped
+           (pcase chr
+             ("t" (gettext-parser--po--concat-node-value! "\t"))
+             ("n" (gettext-parser--po--concat-node-value! "\n"))
+             ("r" (gettext-parser--po--concat-node-value! "\r"))
+             (_ (gettext-parser--po--concat-node-value! chr)))
+           (setq gettext-parser--po--escaped nil))
+          ((equal chr "\\")
+           (setq gettext-parser--po--escaped t))
+          (t
+           (cond ((equal chr (map-elt gettext-parser--po--node 'quote))
+                  (setq gettext-parser--po--state 'none))
+                 (t
+                  (gettext-parser--po--concat-node-value! chr)))
+           (setq gettext-parser--po--escaped nil))))
+        ('key
+         (if (string-match-p
+              (map-elt gettext-parser--po-symbols 'key)
+              chr)
+             (gettext-parser--po--concat-node-value! chr)
+           (unless (string-match-p
+                    (map-elt gettext-parser--po-symbols 'key-names)
+                    (map-elt gettext-parser--po--node 'value))
+             (error "Error parsing PO data: Invalid key name \"%s\" at line %s. This can be caused by an unescaped quote character in a msgid or msgstr value"
+                    (map-elt gettext-parser--po--node 'value)
+                    gettext-parser--po--line-number))
+           (setq gettext-parser--po--state 'none)
+           (cl-decf i))))
+      (cl-incf i))))
+
+(defun gettext-parser--po-join-string-values (tokens)
+  "Join multiline strings in TOKENS."
+  (let (response last-node)
+    (dolist (node tokens)
+      (cond ((and last-node
+                  (eq 'string (oref node type))
+                  (eq 'string (oref last-node type)))
+             (gettext-parser--concat!
+              (oref last-node value)
+              (oref node value)))
+            ((and last-node
+                  (eq 'comments (oref node type))
+                  (eq 'comments (oref last-node type)))
+             (gettext-parser--concat!
+              (oref last-node value)
+              (concat "\n" (oref node value))))
+            (t
+             (push node response)
+             (setq last-node node))))
+    (nreverse response)))
+
+(defun gettext-parser--po-parse-comments (tokens)
+  "Parse comments in TOKENS into separate comment blocks.
+Mutates TOKENS but also returns it."
+  (dolist (node tokens)
+    (when (and node (eq 'comments (oref node type)))
+      (let ((comment (gettext-parser--comment))
+            (lines (split-string
+                    (or (oref node value) "")
+                    "\n")))
+        (dolist (line lines)
+          (pcase (gettext-parser--char-at line 0)
+            (":" (push (string-trim (substring line 1))
+                       (oref comment reference)))
+            ("." (push (replace-regexp-in-string "^[[:space:]]+" ""
+                                                 (substring line 1))
+                       (oref comment extracted)))
+            ("," (push (replace-regexp-in-string "^[[:space:]]+" ""
+                                                 (substring line 1))
+                       (oref comment flag)))
+            ("|" (push (replace-regexp-in-string "^[[:space:]]+" ""
+                                                 (substring line 1))
+                       (oref comment previous)))
+            ("~" nil)
+            (_ (push (replace-regexp-in-string "^[[:space:]]+" "" line)
+                     (oref comment translator)))))
+        (oset node value nil)
+        (dolist (key '(translator extracted reference flag previous))
+          (when (eieio-oref comment key)
+            (setf (eieio-oref comment key)
+                  (nreverse (eieio-oref comment key)))
+            (setf (eieio-oref (oref node value) key)
+                  (string-join (eieio-oref comment key) "\n")))))))
+  tokens)
 
 (defun gettext-parser--po-handle-keys (tokens)
   "Join gettext keys with values in TOKENS."
@@ -381,188 +549,16 @@ Will throw an error if token validation fails."
   "Convert parsed TOKENS to a translation table.
 PARSER is the parser object."
   (let ((data (gettext-parser--po-join-string-values tokens)))
-    (gettext-parser--po-parse-comments data)
+    (setq data (gettext-parser--po-parse-comments data))
     (setq data (gettext-parser--po-handle-keys data))
     (setq data (gettext-parser--po-handle-values parser data))
     (gettext-parser--po-normalize data)))
-
-(defvar-local gettext-parser--po--validation nil)
-(defvar-local gettext-parser--po--line-number nil)
-(defvar-local gettext-parser--po--state 'none
-  "The current parsing state.
-Possible values: `none', `comments', `key', `string', `obsolete'.")
-(defvar-local gettext-parser--po--node nil)
-(defvar-local gettext-parser--po--escaped nil)
-(defvar-local gettext-parser--po--lex nil
-  "Token parsing state.")
-(defconst gettext-parser--po-types '(comments key string obsolete)
-  "Possible values: `comments', `key', `string', `obsolete'.")
-(defconst gettext-parser--po-symbols
-  `((quotes . "[\"']")
-    (comments . "#")
-    (whitespace . "[[:space:]]")
-    (key . ,(rx (any "-" word "\\]")))
-    (key-names . ,(rx bol
-                      (or "msgctxt"
-                          "msgid"
-                          "msgid_plural"
-                          (seq "msgstr"
-                               (opt "[" (+ digit) "]")))
-                      eol)))
-  "String matches for lexer.")
 
 (defmacro gettext-parser--po--concat-node-value! (value)
   "Concat VALUE to node.value."
   `(gettext-parser--concat!
     (map-elt gettext-parser--po--node 'value)
     ,value))
-;; Parser.prototype._lexer
-;; TODO: push order
-(defun gettext-parser--po-lexer (chunk)
-  "Token parser.
-Parsed state is stored into `gettext-parser--po-lex'.
-CHUNK is a string for the chunk to process."
-  (let ((len (length chunk))
-        (i 0)
-        chr)
-    ;; Use an index like this to allow backtracking
-    (while (< i len)
-      (setq chr (string (aref chunk i)))
-      (when (equal chr "\n")
-        (cl-incf gettext-parser--po--line-number))
-      (pcase gettext-parser--po--state
-        ((or 'none 'obsolete)
-         (cond ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'quotes)
-                 chr)
-                (setq gettext-parser--po--node
-                      `((type . string)
-                        (value . "")
-                        (quote . ,chr)))
-                (push gettext-parser--po--node
-                      gettext-parser--po--lex)
-                (setq gettext-parser--po--state 'string))
-               ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'comments)
-                 chr)
-                (setq gettext-parser--po--node
-                      `((type . comments)
-                        (value . "")))
-                (push gettext-parser--po--node
-                      gettext-parser--po--lex)
-                (setq gettext-parser--po--state 'comments))
-               ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'whitespace)
-                 chr)
-                (setq gettext-parser--po--node
-                      `((type . key)
-                        (value . ,chr)
-                        ,@(when (eq gettext-parser--po--state 'obsolete)
-                            '((obsolete . t)))))
-                (push gettext-parser--po--node
-                      gettext-parser--po--lex)
-                (setq gettext-parser--po--state 'key))))
-        ('comments
-         (cond ((equal chr "\n")
-                (setq gettext-parser--po--state 'none))
-               ((and (equal chr "~")
-                     (equal (map-elt gettext-parser--po--node 'value)
-                            ""))
-                (gettext-parser--po--concat-node-value! chr)
-                (setq gettext-parser--po--state 'obsolete))
-               ((not (equal chr "\r"))
-                (gettext-parser--po--concat-node-value! chr))))
-        ('string
-         (cond
-          (gettext-parser--po--escaped
-           (pcase chr
-             ("t" (gettext-parser--po--concat-node-value! "\t"))
-             ("n" (gettext-parser--po--concat-node-value! "\n"))
-             ("r" (gettext-parser--po--concat-node-value! "\r"))
-             (_ (gettext-parser--po--concat-node-value! chr)))
-           (setq gettext-parser--po--escaped nil))
-          ((equal chr "\\")
-           (setq gettext-parser--po--escaped t))
-          (t
-           (cond ((equal chr (map-elt gettext-parser--po--node 'quote))
-                  (setq gettext-parser--po--state 'none))
-                 (t
-                  (gettext-parser--po--concat-node-value! chr)))
-           (setq gettext-parser--po--escaped nil))))
-        ('key
-         (if (string-match-p
-              (map-elt gettext-parser--po-symbols 'key)
-              chr)
-             (gettext-parser--po--concat-node-value! chr)
-           (unless (string-match-p
-                    (map-elt gettext-parser--po-symbols 'key-names)
-                    (map-elt gettext-parser--po--node 'value))
-             (error "Error parsing PO data: Invalid key name \"%s\" at line %s. This can be caused by an unescaped quote character in a msgid or msgstr value"
-                    (map-elt gettext-parser--po--node 'value)
-                    gettext-parser--po--line-number))
-           (setq gettext-parser--po--state 'none)
-           (cl-decf i))))
-      (cl-incf i))))
-
-;; Parser.prototype._joinStringValues
-(defun gettext-parser--po-join-string-values (tokens)
-  "Join multiline strings in TOKENS."
-  (let (response last-node)
-    (dolist (node tokens)
-      (cond ((and last-node
-                  (eq (map-elt node 'type) 'string)
-                  (eq (map-elt last-node 'type) 'string))
-             (gettext-parser--concat!
-              (map-elt last-node 'value)
-              (map-elt node 'value)))
-            ((and last-node
-                  (eq (map-elt node 'type) 'comments)
-                  (eq (map-elt last-node 'type) 'comments))
-             (gettext-parser--concat!
-              (map-elt last-node 'value)
-              (concat "\n" (map-elt node 'value))))
-            (t
-             (push node response)
-             (setq last-node node))))
-    (nreverse response)))
-
-;; Parser.prototype._parseComments
-;; TODO: push order
-(defun gettext-parser--po-parse-comments (tokens)
-  "Parse comments in TOKENS into separate comment blocks."
-  (dolist (node tokens)
-    (when (and node (eq (map-elt node 'type)
-                        'comments))
-      (let ((comment '((translator . nil)
-                       (extracted . nil)
-                       (reference . nil)
-                       (flag . nil)
-                       (previous . nil)))
-            (lines (split-string
-                    (or (map-elt node 'value) "")
-                    "\n")))
-        (dolist (line lines)
-          (pcase (gettext-parser--char-at line 0)
-            (":" (push (string-trim (substring line 1))
-                       (map-elt comment 'reference)))
-            ("." (push (replace-regexp-in-string "^[[:space:]]+" ""
-                                                 (substring line 1))
-                       (map-elt comment 'extracted)))
-            ("," (push (replace-regexp-in-string "^[[:space:]]+" ""
-                                                 (substring line 1))
-                       (map-elt comment 'flag)))
-            ("|" (push (replace-regexp-in-string "^[[:space:]]+" ""
-                                                 (substring line 1))
-                       (map-elt comment 'previous)))
-            ("~" nil)
-            (_ (push (replace-regexp-in-string "^[[:space:]]+" "" line)
-                     (map-elt comment 'translator)))))
-        (setf (map-elt node 'value) nil)
-        (dolist (key (map-keys comment))
-          (when (map-elt comment key)
-            (setf (map-elt (map-elt node 'value) key)
-                  (string-join (map-elt comment key)
-                               "\n"))))))))
 
 ;; TODO Parser.prototype._validateToken
 ;; TODO Parser.prototype._normalize
