@@ -196,9 +196,14 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
                (:constructor gettext-parser--node))
   comments key
   msgctxt msgid msgid_plural msgstr
-  obsolete value quote
+  obsolete value
+  ;; This is `quote', but if we name it `quote' it will error out.
+  ;; This feels like a bug. Reported.
+  ;; https://debbugs.gnu.org/cgi/bugreport.cgi?bug=68345
+  quot
   (type nil :documentation "The value type.
 Possible values: `comments', `key', `string', `obsolete'."))
+
 (cl-defstruct (gettext-parser--po-parser
                (:copier nil)
                (:constructor gettext-parser--po-parser))
@@ -224,7 +229,7 @@ Possible values: `none', `comments', `key', `string', `obsolete'."))
                       eol)))
   "String matches for lexer.")
 
-(cl-defun gettext-parser-po-parse (input &key validation)
+(cl-defun gettext-parser-po-parse (input &key (validation nil))
   "Parse PO INPUT.
 INPUT is either a string or a buffer.
 If VALIDATION is non-nil, throw errors when there are issues."
@@ -264,7 +269,7 @@ CHUNK is a string for the chunk to process."
                       (gettext-parser--node
                        :type 'string
                        :value ""
-                       :quote chr))
+                       :quot chr))
                 (push (oref parser node)
                       (oref parser lex))
                 (oset parser state 'string))
@@ -331,7 +336,7 @@ CHUNK is a string for the chunk to process."
            (oset parser escaped t))
           (t
            (cond ((equal chr (-> (oref parser node)
-                                 (oref quote)))
+                                 (oref quot)))
                   (oset parser state 'none))
                  (t
                   (gettext-parser--concat!

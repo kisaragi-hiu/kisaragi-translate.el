@@ -42,6 +42,8 @@ PATH: the project contains translation files within PATH."
 
 (require 'bufview)
 
+(require 'gettext-parser)
+
 ;;;;; The editable region workaround.
 ;; Given a UI like this, in a non-read-only buffer:
 ;;
@@ -194,15 +196,20 @@ for selecting entries of a file."
 Alternatively, a `completing-read'-based command is also provided
 for selecting files of a project.")
 
-(kisaragi-translate--entry-view
- (kisaragi-translate--entry
-  :source
-  (concat "Use KDE software to surf the web, keep in touch with colleagues, friends and "
-          "family, manage your files, enjoy music and videos; and get creative and "
-          "productive at work. The KDE community develops and maintains more than "
-          "<strong>200</strong> applications which run on any Linux desktop, and often "
-          "other platforms too.")
-  :target "KDEのソフトウェアでウェブに"))
+(prog1 nil
+  (setq k/tmp
+        (gettext-parser-po-parse
+         (f-read-text "~/kde-translations/zh_TW/kf6/messages/akregator/akregator.po"))))
+
+;; (kisaragi-translate--entry-view
+;;  (kisaragi-translate--entry
+;;   :source
+;;   (concat "Use KDE software to surf the web, keep in touch with colleagues, friends and "
+;;           "family, manage your files, enjoy music and videos; and get creative and "
+;;           "productive at work. The KDE community develops and maintains more than "
+;;           "<strong>200</strong> applications which run on any Linux desktop, and often "
+;;           "other platforms too.")
+;;   :target "KDEのソフトウェアでウェブに"))
 
 (provide 'kisaragi-translate)
 ;;; kisaragi-translate.el ends here
