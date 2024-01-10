@@ -194,9 +194,14 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
 (cl-defstruct (gettext-parser--node
                (:copier nil)
                (:constructor gettext-parser--node))
-  comments key
-  msgctxt msgid msgid_plural msgstr
-  obsolete value
+  comments ; string
+  key ; string
+  msgctxt
+  msgid
+  msgid_plural
+  msgstr
+  obsolete
+  value
   ;; This is `quote', but if we name it `quote' it will error out.
   ;; This feels like a bug. Reported.
   ;; Apparently already fixed for Emacs 30.
@@ -414,12 +419,12 @@ Mutates TOKENS but also returns it."
             (_ (push (replace-regexp-in-string "^[[:space:]]+" "" line)
                      (oref comment translator)))))
         (oset node value nil)
-        (dolist (key '(translator extracted reference flag previous))
-          (when (eieio-oref comment key)
-            (setf (eieio-oref comment key)
-                  (nreverse (eieio-oref comment key)))
-            (setf (eieio-oref (oref node value) key)
-                  (string-join (eieio-oref comment key) "\n")))))))
+        (dolist (slot '(translator extracted reference flag previous))
+          (when (eieio-oref comment slot)
+            (setf (eieio-oref comment slot)
+                  (nreverse (eieio-oref comment slot)))
+            (setf (eieio-oref (oref node value) slot)
+                  (string-join (eieio-oref comment slot) "\n")))))))
   tokens)
 
 (defun gettext-parser--po-handle-keys (tokens)
@@ -456,10 +461,10 @@ PARSER is the current parser object."
   (let (response last-node cur-context cur-comments)
     (dolist (node tokens)
       (let ((key (downcase (oref node key))))
-        (cond ((equal key 'msgctxt)
+        (cond ((equal key "msgctxt")
                (setq cur-context (oref node value))
                (setq cur-comments (oref node comments)))
-              ((equal key 'msgid)
+              ((equal key "msgid")
                (setq last-node
                      (gettext-parser--node
                       :msgid (oref node value)
@@ -472,7 +477,7 @@ PARSER is the current parser object."
                (setq cur-context nil
                      cur-comments nil)
                (push last-node response))
-              ((equal key 'msgid_plural)
+              ((equal key "msgid_plural")
                (when last-node
                  (when (and (oref parser validation)
                             (oref last-node msgid_plural))
@@ -488,7 +493,7 @@ PARSER is the current parser object."
                        (oref node comments)))
                (setq cur-context nil
                      cur-comments nil))
-              ((equal "msgstr" (substring (symbol-name key) 0 6))
+              ((equal "msgstr" (substring key 0 6))
                (when last-node
                  (setf (oref last-node msgstr)
                        (append
