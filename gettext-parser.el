@@ -252,6 +252,7 @@ Possible values: `none', `comments', `key', `string', `obsolete'."))
        eol)
    chr))
 
+;; TODO: use a buffer instead
 (cl-defun gettext-parser-po-parse (input &key (validation nil))
   "Parse PO INPUT.
 INPUT is either a string or a buffer.
