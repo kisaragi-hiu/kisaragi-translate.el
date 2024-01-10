@@ -589,10 +589,14 @@ PARSER is the parser object."
 (defun gettext-parser--po-finalize (parser tokens)
   "Convert parsed TOKENS to a translation table.
 PARSER is the parser object."
-  (let ((data (gettext-parser--po-join-string-values tokens)))
-    (setq data (gettext-parser--po-parse-comments data))
-    (setq data (gettext-parser--po-handle-keys data))
-    (setq data (gettext-parser--po-handle-values parser data))
+  (let (data)
+    (setq data (->> tokens
+                    gettext-parser--po-join-string-values
+                    gettext-parser--po-parse-comments
+                    gettext-parser--po-handle-keys
+                    (gettext-parser--po-handle-values parser)))
+    ;; At this point we will have a list of nodes representing entries, not
+    ;; tokens.
     (gettext-parser--po-normalize parser data)))
 
 ;; (defun gettext-parser-po-compile ())
