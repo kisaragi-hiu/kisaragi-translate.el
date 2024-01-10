@@ -216,19 +216,29 @@ Possible values: `comments', `key', `string', `obsolete'."))
    :documentation "The current parsing state.
 Possible values: `none', `comments', `key', `string', `obsolete'."))
 
-(defconst gettext-parser--po-symbols
-  `((quotes . "[\"']")
-    (comments . "#")
-    (whitespace . "[[:space:]]")
-    (key . ,(rx (any "-" word "\\]")))
-    (key-names . ,(rx bol
-                      (or "msgctxt"
-                          "msgid"
-                          "msgid_plural"
-                          (seq "msgstr"
-                               (opt "[" (+ digit) "]")))
-                      eol)))
-  "String matches for lexer.")
+(defun gettext-parser--chr-quote? (chr)
+  "Whether CHR is a quotation symbol."
+  (string-match-p "[\"']" chr))
+(defun gettext-parser--chr-comment? (chr)
+  "Whether CHR is a comment starter symbol."
+  (equal "#" chr))
+(defun gettext-parser--chr-whitespace? (chr)
+  "Whether CHR is a whitespace symbol."
+  (string-match-p "[[:space:]]" chr))
+(defun gettext-parser--chr-key? (chr)
+  "Whether CHR is a symbol for a key."
+  (string-match-p (rx (any "-" word "\\]")) chr))
+(defun gettext-parser--chr-key-name? (chr)
+  "Whether CHR is a valid symbol for a key name."
+  (string-match-p
+   (rx bol
+       (or "msgctxt"
+           "msgid"
+           "msgid_plural"
+           (seq "msgstr"
+                (opt "[" (+ digit) "]")))
+       eol)
+   chr))
 
 (cl-defun gettext-parser-po-parse (input &key (validation nil))
   "Parse PO INPUT.
@@ -263,9 +273,7 @@ CHUNK is a string for the chunk to process."
         (cl-incf (oref parser line-number)))
       (pcase (oref parser state)
         ((or 'none 'obsolete)
-         (cond ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'quotes)
-                 chr)
+         (cond ((gettext-parser--chr-quote? chr)
                 (setf (oref parser node)
                       (gettext-parser--node
                        :type 'string
@@ -274,9 +282,7 @@ CHUNK is a string for the chunk to process."
                 (push (oref parser node)
                       (oref parser lex))
                 (oset parser state 'string))
-               ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'comments)
-                 chr)
+               ((gettext-parser--chr-comment? chr)
                 (setf (oref parser node)
                       (gettext-parser--node
                        :type 'comments
@@ -284,9 +290,7 @@ CHUNK is a string for the chunk to process."
                 (push (oref parser node)
                       (oref parser lex))
                 (oset parser state 'comments))
-               ((not (string-match-p
-                      (map-elt gettext-parser--po-symbols 'whitespace)
-                      chr))
+               ((not (gettext-parser--chr-whitespace? chr))
                 (setf (oref parser node)
                       (gettext-parser--node
                        :type 'key
@@ -346,17 +350,13 @@ CHUNK is a string for the chunk to process."
                    chr)))
            (oset parser escaped nil))))
         ('key
-         (if (string-match-p
-              (map-elt gettext-parser--po-symbols 'key)
-              chr)
+         (if (gettext-parser--chr-key? chr)
              (gettext-parser--concat!
               (-> (oref parser node)
                   (oref value))
               chr)
-           (unless (string-match-p
-                    (map-elt gettext-parser--po-symbols 'key-names)
-                    (-> (oref parser node)
-                        (oref value)))
+           (unless (gettext-parser--chr-key-name? (-> (oref parser node)
+                                                      (oref value)))
              (error "Error parsing PO data: Invalid key name \"%s\" at line %s. This can be caused by an unescaped quote character in a msgid or msgstr value"
                     (-> (oref parser node)
                         (oref value))
