@@ -236,6 +236,7 @@ INPUT is either a string or a buffer.
 If VALIDATION is non-nil, throw errors when there are issues."
   (let ((parser (gettext-parser--po-parser
                  :validation validation
+                 :node (gettext-parser--node)
                  :state 'none
                  :line-number 1)))
     (gettext-parser--po-lexer
