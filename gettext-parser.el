@@ -283,9 +283,9 @@ CHUNK is a string for the chunk to process."
                 (push (oref parser node)
                       (oref parser lex))
                 (oset parser state 'comments))
-               ((string-match-p
-                 (map-elt gettext-parser--po-symbols 'whitespace)
-                 chr)
+               ((not (string-match-p
+                      (map-elt gettext-parser--po-symbols 'whitespace)
+                      chr))
                 (setf (oref parser node)
                       (gettext-parser--node
                        :type 'key
