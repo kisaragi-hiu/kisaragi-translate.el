@@ -589,12 +589,17 @@ PARSER is the parser object."
                 (gettext-parser--parse-nplural-from-header-safely
                  (oref fileobj headers)
                  nplurals)))
-        (gettext-parser--po-validate-token
-         parser
-         node
-         (oref fileobj translations)
-         msgctxt
-         nplurals)))
+        (gettext-parser--po-validate-token parser
+                                           node
+                                           (oref fileobj translations)
+                                           msgctxt
+                                           nplurals)
+        ;; TODO: use a reduced type that doesn't have parsing fields
+        ;; TODO: store entries in a sorted array
+        (setf (-> (oref fileobj translations)
+                  (map-elt msgctxt)
+                  (map-elt (oref node msgid)))
+              node)))
     fileobj))
 
 (defun gettext-parser--po-finalize (parser tokens)
