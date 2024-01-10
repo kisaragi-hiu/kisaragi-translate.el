@@ -210,6 +210,13 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
   (type nil :documentation "The value type.
 Possible values: `comments', `key', `string', `obsolete'."))
 
+(cl-defstruct (gettext-parser-file
+               (:copier nil)
+               (:constructor gettext-parser-file))
+  headers
+  translations
+  obsolete)
+
 (cl-defstruct (gettext-parser--po-parser
                (:copier nil)
                (:constructor gettext-parser--po-parser))
@@ -537,57 +544,61 @@ Will throw an error if token validation fails."
                msgctxt
                (length msgstr)))))))
 
-;; The translation table is
-;; {"msgctxt1": {"msgid": (entry), "msgid2": (entry2)}}
-(defun gettext-parser--po-normalize (parser tokens)
-  "Compose the result table from TOKENS.
+(defun gettext-parser--po-normalize (parser nodes)
+  "Compose the result file object from NODES.
 PARSER is the parser object."
-  (let ((table (make-hash-table))
+  (let ((fileobj (gettext-parser-file))
         (nplurals 1)
         (msgctxt nil))
-    (puthash 'headers nil table)
-    (puthash 'translations (gettext-parser--translation-table) table)
-    (dolist (node tokens)
+    (oset fileobj headers nil)
+    (oset fileobj translations (make-hash-table :test #'equal))
+    (dolist (node nodes)
+      (setq msgctxt (or (oref node msgctxt) ""))
       (catch 'continue
         (when (oref node obsolete)
-          (unless (-> (map-elt table 'obsolete)
+          ;; Initialize fileobj.obsolete and fileobj.obsolete[msgctxt]
+          (unless (oref fileobj obsolete)
+            (setf (oref fileobj obsolete)
+                  (make-hash-table :test #'equal)))
+          (unless (-> (oref fileobj obsolete)
                       (map-elt msgctxt))
-            (setf (-> (map-elt table 'obsolete)
+            (setf (-> (oref fileobj obsolete)
                       (map-elt msgctxt))
-                  (make-hash-table)))
+                  (make-hash-table :test #'equal)))
           (oset node obsolete nil)
-          (setf (-> (map-elt table 'obsolete)
+          ;; Set fileobj.obsolete[msgctxt][msgid] to node
+          (setf (-> (oref fileobj obsolete)
                     (map-elt msgctxt)
                     (map-elt (oref node msgid)))
                 node)
           (throw 'continue nil))
-        (unless (gettext-parser--translation-table--elt
-                 (map-elt table 'translations)
-                 msgctxt)
-          (gettext-parser--translation-table--put
-           (map-elt table 'translations)
-           msgctxt (make-hash-table)))
-        (when (and (not (map-elt table 'headers))
-                   (not msgctxt)
-                   (not (oref node msgid)))
-          (setf (map-elt table 'headers)
+        ;; Initialize fileobj.translations[msgctxt]
+        (unless (-> (oref fileobj translations)
+                    (map-elt msgctxt))
+          (setf (-> (oref fileobj translations)
+                    (map-elt msgctxt))
+                (make-hash-table :test #'equal)))
+        (unless (or (oref fileobj headers)
+                    msgctxt
+                    (oref node msgid))
+          (setf (oref fileobj headers)
                 (gettext-parser--parse-header
                  (-> (oref node msgstr)
                      (elt 0))))
           (setq nplurals
                 (gettext-parser--parse-nplural-from-header-safely
-                 (map-elt table 'headers)
+                 (oref fileobj headers)
                  nplurals)))
         (gettext-parser--po-validate-token
          parser
          node
-         (map-elt table 'translations)
+         (oref fileobj translations)
          msgctxt
          nplurals)))
-    table))
+    fileobj))
 
 (defun gettext-parser--po-finalize (parser tokens)
-  "Convert parsed TOKENS to a translation table.
+  "Convert parsed TOKENS to a file object.
 PARSER is the parser object."
   (let (data)
     (setq data (->> tokens
