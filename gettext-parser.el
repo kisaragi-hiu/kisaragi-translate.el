@@ -199,6 +199,7 @@ If MSGID is non-nil, lookup MSGID from the entries instead."
   obsolete value
   ;; This is `quote', but if we name it `quote' it will error out.
   ;; This feels like a bug. Reported.
+  ;; Apparently already fixed for Emacs 30.
   ;; https://debbugs.gnu.org/cgi/bugreport.cgi?bug=68345
   quot
   (type nil :documentation "The value type.
@@ -207,7 +208,7 @@ Possible values: `comments', `key', `string', `obsolete'."))
 (cl-defstruct (gettext-parser--po-parser
                (:copier nil)
                (:constructor gettext-parser--po-parser))
-  escaped file-contents lex line-number
+  escaped lex line-number
   node
   validation
   (state
@@ -236,14 +237,13 @@ If VALIDATION is non-nil, throw errors when there are issues."
   (let ((parser (gettext-parser--po-parser
                  :validation validation
                  :state 'none
-                 :line-number 1
-                 :file-contents (if (stringp input)
-                                    input
-                                  (with-current-buffer input
-                                    (buffer-string))))))
+                 :line-number 1)))
     (gettext-parser--po-lexer
      parser
-     (oref parser file-contents))
+     (if (stringp input)
+         input
+       (with-current-buffer input
+         (buffer-string))))
     (gettext-parser--po-finalize
      parser
      (oref parser lex))))
